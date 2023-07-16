@@ -1,36 +1,71 @@
 UNAME_S := $(shell uname -s)
+CC := g++
 target   := sdlarch
-sources  := sdlarch.c glad.c
-CFLAGS   := -Wall -g
+sources  := sdlarch.cpp glad.c
+CFLAGS   := -fpermissive -std=c++11 -Wall -g -Ilibjuice/include -I../imgui/ -I../imgui/backends/
 ifeq ($(UNAME_S),Darwin)
 LFLAGS   := -static-libstdc++
 else
 LFLAGS   := -static-libgcc
 endif
-LIBS     := 
+LIBS     := -L/c/Users/johnk/Programming/sdlarch/libjuice/build -ljuice
 packages := sdl2
 
-# do not edit from here onwards
-objects := $(addprefix build/,$(sources:.c=.o))
+sources += sdlarch.cpp glad.c ../imgui/imgui.cpp ../imgui/backends/imgui_impl_sdl2.cpp ../imgui/backends/imgui_impl_opengl3.cpp
+objects += build/sdlarch.o build/glad.o ../imgui/imgui.o ../imgui/imgui_draw.o ../imgui/imgui_demo.o ../imgui/imgui_tables.o ../imgui/imgui_widgets.o build/imgui_impl_sdl2.o build/imgui_impl_opengl3.o
 ifneq ($(packages),)
     LIBS    += $(shell pkg-config --libs-only-l $(packages))
     LFLAGS  += $(shell pkg-config --libs-only-L --libs-only-other $(packages))
-    CFLAGS  += $(shell pkg-config --cflags $(packages))
+    #CFLAGS  += $(shell pkg-config --cflags $(packages))
+	CFLAGS += -IC:/msys64/mingw64/include/SDL2
 endif
 
 .PHONY: all clean
 
-all: $(target)
+all: $(target) 
 clean:
 	-rm -rf build
 	-rm -f $(target)
 
-$(target): Makefile $(objects)
+$(target): Makefile $(objects) $(PWD)/juice.dll
 	$(CC) $(LFLAGS) -o $@ $(objects) $(LIBS)
 
-build/%.o: %.c Makefile
+LIBJUICE_FILES := $(wildcard libjuice/*)
+$(PWD)/juice.dll: $(LIBJUICE_FILES)
+	cd libjuice; powershell ./build.bat
+	cp libjuice/build/juice.dll .
+
+build/%.o: %.cpp Makefile
 	-@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -MMD -o $@ $<
 
--include $(addprefix build/,$(sources:.c=.d))
+build/imgui_impl_sdl2.o : ../imgui/backends/imgui_impl_sdl2.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+build/imgui_impl_opengl3.o : ../imgui/backends/imgui_impl_opengl3.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+../imgui/imgui.o : ../imgui/imgui.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+../imgui/imgui_draw.o : ../imgui/imgui_draw.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+../imgui/imgui_tables.o : ../imgui/imgui_tables.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+../imgui/imgui_widgets.o : ../imgui/imgui_widgets.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+../imgui/imgui_demo.o : ../imgui/imgui_demo.cpp Makefile
+	-@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -MMD -o $@ $<
+
+#-include $(addprefix build/,$(sources:.c=.d))
 
