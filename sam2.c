@@ -23,6 +23,7 @@
 // Signaling Server and a Match Maker
 
 #include <stdint.h>
+#include <inttypes.h>
 
 #define str(s) _str(s)
 #define _str(s) #s
@@ -114,6 +115,7 @@ typedef struct sig_room {
     char turn_hostname[64]; // optional ascii either a domain name @todo maybe needed
     uint64_t ports; // 32 ports, 2 bits per port 0b00 = unavailable, 0b01 = available, 0b10 = reserve, 0b11 = occupied
     uint64_t flags;
+    uint64_t authority_peer_id; // Set by server
 } sam2_room_t;
 
 typedef struct sig_room_make_request {
@@ -469,7 +471,12 @@ SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_m
     timeout.tv_usec = (timeout_ms % 1000) * 1000;
 
     // Use select() to poll the socket
-    int result = select(sockfd + 1, NULL, &fdset, NULL, &timeout);
+#if _WIN32
+    int nfds = 0; // Ignored on Windows
+#else
+    int nfds = sockfd + 1;
+#endif
+    int result = select(nfds, NULL, &fdset, NULL, &timeout);
 
     if (result < 0) {
         // Error occurred
@@ -695,6 +702,24 @@ static void on_socket_closed(uv_handle_t *handle) {
 
     if (client->data) {
         client_data_t *client_data = (client_data_t *) client->data;
+        sam2_server_t *server_data = client_data->sig_server;
+        
+        // Linear search remove rooms from array replacing with last element
+        for (int i = 0; i < server_data->room_count;) {
+            if (server_data->rooms[i].authority_peer_id != client_data->peer_id) {
+                i++;
+                continue;
+            }
+
+            // This check avoids aliasing issues with memcpy which clang swaps in here
+            if (i != server_data->room_count - 1) {
+                server_data->rooms[i] = server_data->rooms[server_data->room_count - 1];
+            }
+
+            --server_data->room_count;
+
+            LOG_INFO("Removed room '%s' owner %" PRIx64 " disconnected\n", server_data->rooms[i].name, server_data->rooms[i].authority_peer_id);
+        }
 
         if (client_data->timer) {
             uv_close((uv_handle_t *) client_data->timer, on_close_handle);
@@ -841,9 +866,11 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 
                 if (sig_server->room_count + 1 <= sig_server->room_capacity) {
                     // @todo Linear scan for free room
-                    sam2_room_t          *room          = sig_server->rooms          + sig_server->room_count;
+                    sam2_room_t *room = sig_server->rooms + sig_server->room_count;
                     //sig_room_internal_t *room_internal = sig_server->rooms_internal + sig_server->room_count;
                     sig_server->room_count += 1;
+
+                    request->room.authority_peer_id = client_data->peer_id;
 
                     // Two quick ones
                     LOG_VERBOSE("Copying &request->room:%p into room+sig_server->room_count:%p room_count:%lld\n", &request->room, room, (long long int)sig_server->room_count);
@@ -1081,7 +1108,7 @@ int main() {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + 64 + sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(uint64_t) + 64 + 64 + sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sig_room_make_request_t) == 8 + 64 + sizeof(sam2_room_t), "sig_room_create_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_response_t) == 8, "sig_response_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sig_room_list_request_t) == 8, "sig_room_list_request_t is not packed");

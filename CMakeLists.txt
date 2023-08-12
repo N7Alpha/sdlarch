@@ -46,11 +46,13 @@ else()
 endif()
 
 # Include Directories
-include_directories(libjuice/include imgui/ imgui/backends/)
+include_directories(libjuice/include zstd/lib imgui/ imgui/backends/)
 
 # Source Files
 set(SOURCE_FILES 
     sdlarch.cpp
+    fec.cpp
+    rs.cpp
     glad.c
     imgui/imgui.cpp
     imgui/backends/imgui_impl_sdl2.cpp
@@ -65,12 +67,13 @@ set(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
 add_subdirectory(SDL)
 add_subdirectory(libuv)
 add_subdirectory(libjuice)
+add_subdirectory(zstd/build/cmake)
 
 # Target
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 
 # Static link everything so we don't have to deal with dll hell
-target_link_libraries(${PROJECT_NAME} SDL2-static SDL2main uv_a juice-static)
+target_link_libraries(${PROJECT_NAME} SDL2-static SDL2main uv_a juice-static libzstd_static)
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} ws2_32)
