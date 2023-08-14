@@ -33,8 +33,10 @@ static void sleep(unsigned int secs) { Sleep(secs * 1000); }
 // Considering various things like STUN/TURN headers and the UDP/IP headers, additional junk load balancers and routers might add I keep this conservative
 #define PACKET_MTU_PAYLOAD_BYTES 1408
 
+#define JUICE_CONCURRENCY_MODE JUICE_CONCURRENCY_MODE_USER
 
-#define NETPLAY 0
+
+#define NETPLAY 1
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -43,7 +45,7 @@ static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static const uint8_t *g_kbd = NULL;
 struct retro_system_av_info g_av = {0};
-static juice_agent_t *agent;
+static juice_agent_t *agent = NULL;
 bool g_netplay_ready = false;
 static sam2_socket_t g_sam2_socket = 0;
 static struct retro_audio_callback audio_callback;
@@ -160,7 +162,7 @@ static struct keymap g_binds[] = {
 
 static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */] = { 0 };
 
-static std::atomic<int64_t> g_frame_counter_remote{(unsigned)-1};
+static int64_t g_frame_counter_remote{-1};
 int64_t frame_counter = 0;
 
 #define load_sym(V, S) do {\
@@ -531,6 +533,52 @@ double format_unit_count(double count, char *unit)
 }
 
 #define MAX_ROOMS 1024
+typedef struct {
+    uint8_t channel_and_flags;
+    int64_t frame;
+    unsigned joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */];
+} input_packet_t; // @todo get this to have the no padding
+
+#define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
+#define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
+
+typedef struct {
+    uint8_t channel_and_flags;
+    union {
+        uint8_t reed_solomon_k;
+        uint8_t packet_groups;
+        uint8_t sequence_hi;
+    };
+
+    uint8_t sequence_lo;
+
+    uint8_t payload[]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
+} savestate_transfer_packet_t;
+
+typedef struct {
+    uint8_t channel_and_flags;
+    union {
+        uint8_t reed_solomon_k;
+        uint8_t packet_groups;
+        uint8_t sequence_hi;
+    };
+
+    uint8_t sequence_lo;
+
+    uint8_t payload[PACKET_MTU_PAYLOAD_BYTES-3]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
+} savestate_transfer_packet2_t;
+static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_BYTES);
+
+typedef struct {
+    int64_t total_size_bytes;
+    int64_t frame;
+    uint64_t encoding_chain; // @todo probably won't use this
+    uint64_t xxhash;
+
+    int64_t savestate_size;
+    uint8_t zipped_savestate[];
+} savestate_transfer_payload_t;
+
 
 static sam2_room_t g_room = { "My Room Name", "TURN host", 0b01010101, 0 };
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
@@ -554,6 +602,7 @@ int g_zstd_thread_count = 4;
 
 size_t dictionary_size = 0;
 unsigned char g_dictionary[256*1024];
+
 static bool g_use_dictionary = false;
 static bool g_dictionary_is_dirty = true;
 static ZDICT_cover_params_t g_parameters = {0};
@@ -562,52 +611,35 @@ static ZDICT_cover_params_t g_parameters = {0};
 #define CHANNEL_INPUT              0b00000000
 #define CHANNEL_SAVESTATE_TRANSFER 0b00010000
 
-typedef struct {
-    uint8_t channel_and_flags;
-    int64_t frame;
-    unsigned joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */];
-} input_packet_t; // @todo get this to have the right padding
-
-#define SAVESTATE_TRANSFER_FLAG_K_IS_239 0b0001
-
-typedef struct {
-    uint8_t channel_and_flags;
-    union {
-        uint8_t reed_solomon_k;
-        uint8_t sequence_hi;
-    };
-
-    uint8_t sequence_lo;
-
-    uint8_t payload[PACKET_MTU_PAYLOAD_BYTES-3];
-} savestate_transfer_packet_t;
-
-typedef struct {
-    int64_t frame;
-    uint64_t encoding_chain; // @todo probably won't use this
-    uint64_t xxhash;
-
-    int64_t savestate_size;
-    uint8_t zipped_savestate[];
-} savestate_transfer_payload_t;
-
-static_assert(sizeof(savestate_transfer_packet_t) == PACKET_MTU_PAYLOAD_BYTES);
 
 #define MAX_REDUNDANT_PACKETS 32
 static bool g_do_reed_solomon = false;
 static int g_redundant_packets = MAX_REDUNDANT_PACKETS - 1;
 static int g_lost_packets = 0;
 
-
+uint64_t g_remote_savestate_hash = 0x6AEBEEF1EDADD1E5;
 
 #define MAX_SAVE_STATES 64
-#define SAVE_STATE_COMPRESSED_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(g_savebuffer[0]))
 static unsigned char g_savebuffer[MAX_SAVE_STATES][20 * 1024 * 1024] = {0};
-static unsigned char g_savestate_transfer_payload_untyped[sizeof(savestate_transfer_payload_t) + 255 * SAVE_STATE_COMPRESSED_BOUND_BYTES / (255 - MAX_REDUNDANT_PACKETS)];
+
+#define SAVE_STATE_COMPRESSED_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(g_savebuffer[0]))
+#define SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES (255 * SAVE_STATE_COMPRESSED_BOUND_BYTES / (255 - MAX_REDUNDANT_PACKETS))
+static unsigned char g_savestate_transfer_payload_untyped[sizeof(savestate_transfer_payload_t) + SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES];
 static savestate_transfer_payload_t *g_savestate_transfer_payload = (savestate_transfer_payload_t *) g_savestate_transfer_payload_untyped;
 static uint8_t *g_savebuffer_compressed = g_savestate_transfer_payload->zipped_savestate;
+
 static int g_save_state_index = 0;
 static int g_save_state_used_for_delta_index_offset = 1;
+
+#define MAX_FEC_PACKET_GROUPS 16
+#define FEC_REDUNDANT_BLOCKS 16
+static void* g_fec_packet[MAX_FEC_PACKET_GROUPS][255 - FEC_REDUNDANT_BLOCKS];
+static int g_fec_index[MAX_FEC_PACKET_GROUPS][255 - FEC_REDUNDANT_BLOCKS];
+static int g_fec_index_counter[MAX_FEC_PACKET_GROUPS] = {0};
+static unsigned char g_remote_savestate_transfer_packets[SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES + MAX_FEC_PACKET_GROUPS * (255 - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
+static int64_t g_remote_savestate_transfer_offset = 0;
+uint8_t g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
+static bool g_send_savestate_next_frame = false;
 
 static bool g_is_refreshing_rooms = false;
 
@@ -699,6 +731,9 @@ void draw_imgui() {
             strcpy(unit, "bytes/cycle");
             display_count = format_unit_count(g_serialize_size / avg_zstd_cycle_count, unit);
             ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
+
+            g_send_savestate_next_frame = ImGui::Button("Send Savestate");
+            ImGui::Text("Remote Savestate hash: %llx", g_remote_savestate_hash);
         }
 
         ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
@@ -1278,7 +1313,10 @@ static int16_t core_input_state(unsigned port, unsigned device, unsigned index, 
 		return 0;
 
 #if NETPLAY
-    while (g_frame_counter_remote.load(std::memory_order_acquire) != (frame_counter-1)) {
+    while (g_frame_counter_remote != frame_counter-1) {
+#if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
+    juice_user_poll(&agent, 1);
+#endif
         _mm_pause();
         _mm_pause();
     }
@@ -1438,6 +1476,7 @@ int test_connectivity() {
   memset(&config, 0, sizeof(config));
 
   // STUN server example*
+  config.concurrency_mode = JUICE_CONCURRENCY_MODE;
   config.stun_server_host = "stun.l.google.com";
   config.stun_server_port = 19302;
   //config.bind_address = "127.0.0.1";
@@ -1519,8 +1558,19 @@ int test_connectivity() {
 #endif
 
   juice_set_remote_gathering_done(agent);
+  #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
+  // Poll for two seconds sleeping 20ms between polls
+  for(int i = 0; i < 100; ++i) {
+    juice_user_poll(&agent, 1);
+    #ifdef _WIN32
+      Sleep(20);
+    #else
+      usleep(20000);
+    #endif
+  }
+  #else
   sleep(2);
-
+  #endif
   // -- Connection should be finished --
 
   juice_state_t state = juice_get_state(agent);
@@ -1586,26 +1636,91 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
 // On message received
 static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
-  uint8_t channel_and_flags = data[0];
-  switch (channel_and_flags & 0xF0) {
-    case CHANNEL_INPUT:
-      SDL_assert(size == sizeof(input_packet_t));
-      int64_t frame_counter_remote;
-      memcpy(&frame_counter_remote, data + offsetof(input_packet_t, frame), sizeof(input_packet_t::frame));
-      memcpy(g_joy_remote, data + offsetof(input_packet_t, joy), sizeof(input_packet_t::joy));
-      g_frame_counter_remote.store(frame_counter_remote, std::memory_order_release);
-      break;
+    uint8_t channel_and_flags = data[0];
+    switch (channel_and_flags & 0xF0) {
+    case CHANNEL_INPUT: {
+        SDL_assert(size == sizeof(input_packet_t));
+        memcpy(&g_frame_counter_remote, data + offsetof(input_packet_t, frame), sizeof(input_packet_t::frame));
+        memcpy(g_joy_remote, data + offsetof(input_packet_t, joy), sizeof(input_packet_t::joy));
+        break;
+    }
+    case CHANNEL_SAVESTATE_TRANSFER: {
+        SDL_assert(size >= sizeof(savestate_transfer_packet_t));
+        SDL_assert(size <= PACKET_MTU_PAYLOAD_BYTES);
+        uint8_t sequence_hi = 0;
+        int k = 239;
+        if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_K_IS_239) {
+            if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0) {
+                g_remote_packet_groups = data[1];
+            } else {
+                sequence_hi = data[1];
+            }
+        } else {
+            k = data[1];
+            g_remote_packet_groups = 1; // k != 239 => 1 packet group
+        }
+
+        if (g_fec_index_counter[sequence_hi] == k) {
+            // We already have received enough Reed-Solomon blocks to decode the payload; we can ignore this packet
+            break;
+        }
+
+        uint8_t sequence_lo = data[2];
+
+        uint8_t *copied_packet_ptr = (uint8_t *) memcpy(g_remote_savestate_transfer_packets + g_remote_savestate_transfer_offset, data, size);
+        g_fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
+        g_remote_savestate_transfer_offset += size;
+
+        g_fec_index[sequence_hi][g_fec_index_counter[sequence_hi]++] = sequence_lo;
+
+        if (g_fec_index_counter[sequence_hi] == k) {
+            int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (255 - FEC_REDUNDANT_BLOCKS);
+            void *rs_code = fec_new(k, k + redudant_blocks_sent);
+            int rs_block_size = (int) (size - sizeof(savestate_transfer_packet_t));
+            int status = fec_decode(rs_code, g_fec_packet[sequence_hi], g_fec_index[sequence_hi], rs_block_size);
+            SDL_assert(status == 0);
+            fec_free(rs_code);
+
+            bool all_data_decoded = true;
+            for (int i = 0; i < g_remote_packet_groups; i++) {
+                all_data_decoded &= g_fec_index_counter[i] == k;
+            }
+
+            if (all_data_decoded) { 
+                printf("All the savestate data has been decoded\n");
+
+                uint8_t *savestate_transfer_payload_untyped = (uint8_t *) g_savestate_transfer_payload;
+                int64_t remote_payload_size = 0;
+                
+                for (int j = 0; j < g_remote_packet_groups; j++) {
+                    for (int i = 0; i < k; i++) {
+                        memcpy(savestate_transfer_payload_untyped + remote_payload_size, g_fec_packet[j][i], rs_block_size);
+                        remote_payload_size += rs_block_size;
+                    }
+                }
+
+                g_remote_savestate_hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
+                printf("Received savestate payload with hash: %llx size: %llu bytes\n", g_remote_savestate_hash, g_savestate_transfer_payload->total_size_bytes);
+
+                // Reset the savestate transfer state
+                g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
+                g_remote_savestate_transfer_offset = 0;
+                memset(g_fec_index_counter, 0, sizeof(g_fec_index_counter));
+            }
+        }
+        break;  
+    }
     default:
       fprintf(stderr, "Unknown channel: %d\n", channel_and_flags);
       break;
-  }
+    }
 
-  //printf("Received with size: %lld\nReceived:", size);
-  //for (unsigned i = 0; i < sizeof(g_joy_remote) / sizeof(g_joy_remote[0]); i++) {
-  //  printf("%x ", g_joy_remote[i]);
-  //}
-  //printf("\n");
-  //fflush(stdout);
+    //printf("Received with size: %lld\nReceived:", size);
+    //for (unsigned i = 0; i < sizeof(g_joy_remote) / sizeof(g_joy_remote[0]); i++) {
+    //  printf("%x ", g_joy_remote[i]);
+    //}
+    //printf("\n");
+    //fflush(stdout);
 }
 
 uint64_t rdtsc() {
@@ -1913,7 +2028,7 @@ int main(int argc, char *argv[]) {
             g_zstd_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
 
             // Reed Solomon
-            int packet_payload_size = sizeof(savestate_transfer_packet_t::payload);
+            int packet_payload_size = PACKET_MTU_PAYLOAD_BYTES - sizeof(savestate_transfer_packet_t);
 
             int n, k, packet_groups;
             logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
@@ -1921,9 +2036,9 @@ int main(int argc, char *argv[]) {
             //int n = k + g_redundant_packets;
             char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
             if (g_do_reed_solomon) {
+                #if 0
                 uint64_t remaining = g_zstd_compress_size[g_save_cycle_count_offset];
                 int i = 0;
-                #if 0
                 for (; i < k; i++) {
                     uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_BYTES, remaining);
                     memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_BYTES], consume);
@@ -1948,7 +2063,62 @@ int main(int argc, char *argv[]) {
                 start = rdtsc();
                 rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_BYTES);
                 g_reed_solomon_decode_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
-            #endif
+                #else
+
+                #endif
+            }
+
+            if (g_send_savestate_next_frame) {
+                g_send_savestate_next_frame = false;
+
+                g_savestate_transfer_payload->frame = frame_counter;
+                g_savestate_transfer_payload->savestate_size = g_zstd_compress_size[g_save_cycle_count_offset];
+                g_savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset];
+
+                uint64_t hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
+                printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
+
+                for (int j = 0; j < packet_groups; j++) {
+                    void *data[255];
+                    void *rs_code = fec_new(k, n);
+                    
+                    for (int i = 0; i < n; i++) {
+                        data[i] = g_savestate_transfer_payload_untyped + i * packet_payload_size + j * packet_payload_size * packet_groups;
+                    }
+
+                    for (int i = k; i < n; i++) {
+                        fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
+                    }
+
+                    fec_free(rs_code);
+
+                    if (agent) {
+                        for (int i = 0; i < n; i++) {
+                            // @todo I need to send the rest of the payload
+                            // interchange the for loop as well
+                            savestate_transfer_packet2_t packet;
+                            packet.channel_and_flags = CHANNEL_SAVESTATE_TRANSFER;
+                            if (k == 239) {
+                                packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_K_IS_239;
+                                if (j == 0) {
+                                    packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0;
+                                    packet.packet_groups = packet_groups;
+                                } else {
+                                    packet.sequence_hi = j;
+                                }
+                            } else {
+                                packet.reed_solomon_k = k;
+                            }
+
+                            packet.sequence_lo = i;
+
+                            memcpy(packet.payload, data[i], packet_payload_size);
+
+                            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size);
+                            SDL_assert(status == 0);
+                        }
+                    }
+                }
             }
         }
 
@@ -1991,7 +2161,7 @@ int main(int argc, char *argv[]) {
                     }
                     
                     fflush(stdout);
-                    int rooms_to_copy = SAM2_MIN(room_list->room_count, MAX_ROOMS - g_sam2_room_count);
+                    int64_t rooms_to_copy = SAM2_MIN(room_list->room_count, (int64_t) MAX_ROOMS - g_sam2_room_count);
                     memcpy(g_sam2_rooms + g_sam2_room_count, room_list->rooms, rooms_to_copy * sizeof(sam2_room_t));
                     g_sam2_room_count += rooms_to_copy;
                     g_is_refreshing_rooms = g_sam2_room_count != room_list->server_room_count;

@@ -851,7 +851,6 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 sam2_room_list_response_t *response = &u->room_list_response;
 
                 memcpy(response->header, "ROOMLIST", SAM2_HEADER_SIZE);
-                //0x6AEBEEF1EDADD1E5
 
                 response->server_room_count = sig_server->room_count;
                 response->room_count = SAM2_MIN((int64_t) SAM2_ARRAY_LENGTH(response->rooms), sig_server->room_count); 
