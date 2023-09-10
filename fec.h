@@ -38,6 +38,11 @@
  * but fastest operation is achieved with 8 bit elements
  * This is the only parameter you may want to change.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef GF_BITS
 #define GF_BITS  8	/* code over GF(2**GF_BITS) - change to suit */
 #endif
@@ -53,4 +58,7 @@ int fec_decode(void *code, void *pkt[], int index[], int sz) ;
 int get_k(void *code);
 int get_n(void *code);
 
+#ifdef __cplusplus
+}
+#endif
 /* end of file */

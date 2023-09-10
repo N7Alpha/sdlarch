@@ -57,7 +57,7 @@ include_directories(libjuice/include zstd/lib imgui/ imgui/backends/)
 # Source Files
 set(SOURCE_FILES 
     sdlarch.cpp
-    fec.cpp
+    fec.c
     rs.cpp
     glad.c
     imgui/imgui.cpp
