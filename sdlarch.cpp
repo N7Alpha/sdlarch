@@ -2046,18 +2046,28 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             break;
         }
 
-        SDL_assert(size >= sizeof(savestate_transfer_packet_t));
-        SDL_assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
+        if (size < sizeof(savestate_transfer_packet_t)) {
+            LOG_WARN("Recv savestate transfer packet with size smaller than header\n");
+            break;
+        }
+
+        if (size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
+            LOG_WARN("Recv savestate transfer packet potentially larger than MTU\n");
+        }
+
+        savestate_transfer_packet_t savestate_transfer_header;
+        memcpy(&savestate_transfer_header, data, sizeof(savestate_transfer_packet_t)); // Strict-aliasing
+
         uint8_t sequence_hi = 0;
         int k = 239;
         if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_K_IS_239) {
             if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0) {
-                g_remote_packet_groups = data[1];
+                g_remote_packet_groups = savestate_transfer_header.packet_groups;
             } else {
-                sequence_hi = data[1];
+                sequence_hi = savestate_transfer_header.sequence_hi;
             }
         } else {
-            k = data[1];
+            k = savestate_transfer_header.reed_solomon_k;
             g_remote_packet_groups = 1; // k != 239 => 1 packet group
         }
 
@@ -2066,7 +2076,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             break;
         }
 
-        uint8_t sequence_lo = data[2];
+        uint8_t sequence_lo = savestate_transfer_header.sequence_lo;
 
         LOG_VERBOSE("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu\n", sequence_hi, sequence_lo);
 
