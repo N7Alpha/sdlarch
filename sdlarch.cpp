@@ -725,7 +725,7 @@ struct CircularQueue {
     }
 
     input_packet_t dequeue() {
-        assert(begin == end && "Cannot dequeue from an empty buffer");
+        assert(begin != end && "Cannot dequeue from an empty buffer");
         input_packet_t packet = buffer[begin];
         begin = (begin + 1) % buffer_size;
         return packet;
