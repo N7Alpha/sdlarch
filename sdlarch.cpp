@@ -49,7 +49,7 @@ static const uint8_t *g_kbd = NULL;
 struct retro_system_av_info g_av = {0};
 static struct retro_audio_callback audio_callback;
 
-static float g_scale = 3;
+static float g_scale = 2;
 bool running = true;
 
 
@@ -683,6 +683,8 @@ typedef struct {
     uint8_t zipped_savestate[];
 } savestate_transfer_payload_t;
 
+int g_argc; 
+char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
     "My Room Name",
@@ -1188,6 +1190,10 @@ finished_drawing_sam2_interface:
     
     {
         ImGui::Begin("Timing", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+
+        for (int i = 0; i < g_argc; i++) {
+            ImGui::Text("argv[%d]=%s", i, g_argv[i]);
+        }
         
         ImGui::Checkbox("Fuzz Input", &g_libretro_context.fuzz_input);
         
@@ -1463,7 +1469,7 @@ static void core_perf_stop(struct retro_perf_counter* counter) {
  */
 static void core_perf_log() {
     // TODO: Use a linked list of counters, and loop through them all.
-    core_log(RETRO_LOG_INFO, "[timer] %s: %i - %i", g_retro.perf_counter_last->ident, g_retro.perf_counter_last->start, g_retro.perf_counter_last->total);
+    //core_log(RETRO_LOG_INFO, "[timer] %s: %i - %i", g_retro.perf_counter_last->ident, g_retro.perf_counter_last->start, g_retro.perf_counter_last->total); This resulted in a nullptr access at one point
 }
 
 static bool core_environment(unsigned cmd, void *data) {
@@ -1622,6 +1628,18 @@ static void core_video_refresh(const void *data, unsigned width, unsigned height
     video_refresh(data, width, height, pitch);
 }
 
+int64_t byte_swap_int64(int64_t val) {
+    int64_t swapped = ((val & 0x00000000000000ffLL) << 56) |
+                      ((val & 0x000000000000ff00LL) << 40) |
+                      ((val & 0x0000000000ff0000LL) << 24) |
+                      ((val & 0x00000000ff000000LL) << 8)  |
+                      ((val & 0x000000ff00000000LL) >> 8)  |
+                      ((val & 0x0000ff0000000000LL) >> 24) |
+                      ((val & 0x00ff000000000000LL) >> 40) |
+                      ((val & 0xff00000000000000LL) >> 56);
+    return swapped;
+}
+
 void FLibretroContext::core_input_poll() {
     auto &g_joy = g_libretro_context.InputState[0];
     g_kbd = SDL_GetKeyboardState(NULL);
@@ -1658,7 +1676,8 @@ void FLibretroContext::core_input_poll() {
         // If the peer was supposed to join on this frame
         if (frame_counter >= g_signal_message[p].frame_counter) {
             while (g_input_packet_queue[p].isEmpty()) {
-                juice_user_poll(&g_agent[p], 1);
+                char buffer[4096];
+                while (juice_user_poll(g_agent[p], buffer, sizeof(buffer))) {}
             }
 
             input_packet_t input_packet = g_input_packet_queue[p].dequeue();
@@ -1840,9 +1859,13 @@ void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
     size_t serialize_size = g_retro.retro_serialize_size();
     void *savebuffer = malloc(serialize_size);
 
+    LOG_INFO("Before serialize\n");
+    fflush(stdout);
     if (!g_retro.retro_serialize(savebuffer, serialize_size)) {
         die("Failed to serialize\n");
     }
+    LOG_INFO("After serialize\n");
+    fflush(stdout);
 
     int packet_payload_size_bytes = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
     int n, k, packet_groups;
@@ -1932,7 +1955,6 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
         && g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
         // We are the authority and we are connected to the other peer
 
-        // Send savestate
         LibretroContext->AuthoritySendSaveState(agent);
     }
 }
@@ -1968,7 +1990,7 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     }
 
     if (g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-        g_signal_message[p].frame_counter = frame_counter+4; // @todo magic number
+        g_signal_message[p].frame_counter = frame_counter+16; // @todo magic number
     }
 
     sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
@@ -2079,6 +2101,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         uint8_t sequence_lo = savestate_transfer_header.sequence_lo;
 
         LOG_VERBOSE("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu\n", sequence_hi, sequence_lo);
+        fflush(stdout);
 
         uint8_t *copied_packet_ptr = (uint8_t *) memcpy(g_remote_savestate_transfer_packets + g_remote_savestate_transfer_offset, data, size);
         g_fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
@@ -2098,15 +2121,15 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
             bool all_data_decoded = true;
             for (int i = 0; i < g_remote_packet_groups; i++) {
-                all_data_decoded &= g_fec_index_counter[i] == k;
+                all_data_decoded &= g_fec_index_counter[i] >= k;
             }
 
             if (all_data_decoded) { 
                 uint8_t *savestate_transfer_payload_untyped = (uint8_t *) g_savestate_transfer_payload;
                 int64_t remote_payload_size = 0;
-                
-                for (int j = 0; j < g_remote_packet_groups; j++) {
-                    for (int i = 0; i < k; i++) {
+                // The last packet contains some number of garbage bytes probably add the size thing back?
+                for (int i = 0; i < k; i++) {
+                    for (int j = 0; j < g_remote_packet_groups; j++) {
                         memcpy(savestate_transfer_payload_untyped + remote_payload_size, g_fec_packet[j][i], rs_block_size);
                         remote_payload_size += rs_block_size;
                     }
@@ -2311,7 +2334,7 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 
     // STUN server example*
     config.concurrency_mode = JUICE_CONCURRENCY_MODE;
-    config.stun_server_host = "stun.l.google.com";
+    config.stun_server_host = "stun2.l.google.com"; // @todo Put a bad url here to test how to handle that
     config.stun_server_port = 19302;
     //config.bind_address = "127.0.0.1";
 
@@ -2505,6 +2528,9 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
 }
 
 int main(int argc, char *argv[]) {
+    g_argc = argc;
+    g_argv = argv;
+
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
 
@@ -2597,7 +2623,8 @@ int main(int argc, char *argv[]) {
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             if (!g_agent[p]) continue;
 
-            juice_user_poll(&g_agent[p], 1);
+            char buffer[4096];
+            while (juice_user_poll(g_agent[p], buffer, sizeof(buffer))) {}
         }
 #endif
 
