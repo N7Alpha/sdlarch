@@ -6,6 +6,20 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(NETPLAYARCH_ASAN "Enable AddressSanitizer (ASan)" OFF)
+
+if(NETPLAYARCH_ASAN)
+  if(CMAKE_C_COMPILER_ID MATCHES "AppleClang|GNU|Clang")
+    # Set compiler and linker flags for ASan
+    add_compile_options(-fno-omit-frame-pointer -fsanitize=address)
+    link_libraries(-fsanitize=address)
+  elseif(MSVC)
+    add_compile_options(/fsanitize=address)
+  else()
+    message(SEND_ERROR "AddressSanitizer support requires clang, gcc, or msvc. Try again with -DCMAKE_C_COMPILER.")
+  endif()
+endif()
+
 if(MSVC)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
   add_definitions(-D_CRT_NONSTDC_NO_DEPRECATE)
