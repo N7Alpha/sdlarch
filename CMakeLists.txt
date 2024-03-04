@@ -56,14 +56,11 @@ elseif()
   set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
 endif()
 
-# Include Directories
-include_directories(libjuice/include zstd/lib imgui/ imgui/backends/ implot/ implot/internal/)
 
 # Source Files
 set(SOURCE_FILES 
     sdlarch.cpp
     fec.cpp
-    rs.cpp
     glad.c
     imgui/imgui.cpp
     imgui/backends/imgui_impl_sdl2.cpp
@@ -73,10 +70,11 @@ set(SOURCE_FILES
     imgui/imgui_tables.cpp
     imgui/imgui_widgets.cpp
     implot/implot.cpp
-    implot/implot_items.cpp)
+    implot/implot_items.cpp
+)
 
 # Add SDL and libuv subdirectories
-set(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
+set(SDL_SHARED_ENABLED_BY_DEFAULT OFF CACHE BOOL "") # I feel like this shouldn't have to be so janky
 add_subdirectory(SDL)
 add_subdirectory(libuv)
 add_subdirectory(libjuice)
@@ -85,11 +83,21 @@ add_subdirectory(zstd/build/cmake)
 # Target
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 
+# This should come after add_executable
+target_include_directories(${PROJECT_NAME} PRIVATE
+    libjuice/include
+    zstd/lib
+    imgui/
+    imgui/backends/
+    implot/
+    SDL/include
+)
+
 # Static link everything so we don't have to deal with dll hell
 target_link_libraries(${PROJECT_NAME} SDL2-static SDL2main uv_a juice-static libzstd_static)
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} ws2_32)
-elseif(UNIX)
+elseif(UNIX AND NOT APPLE)
     target_link_libraries(${PROJECT_NAME} socket)
 endif()
