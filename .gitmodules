@@ -1,0 +1,18 @@
+[submodule "implot"]
+	path = implot
+	url = git@github.com:epezent/implot.git
+[submodule "libuv"]
+	path = libuv
+	url = git@github.com:libuv/libuv.git
+[submodule "imgui"]
+	path = imgui
+	url = git@github.com:ocornut/imgui.git
+[submodule "SDL"]
+	path = SDL
+	url = git@github.com:libsdl-org/SDL.git
+[submodule "zstd"]
+	path = zstd
+	url = git@github.com:facebook/zstd.git
+[submodule "libjuice"]
+	path = libjuice
+	url = git@github.com:N7Alpha/libjuice.git
