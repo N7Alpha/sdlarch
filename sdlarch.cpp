@@ -20,6 +20,7 @@
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
