@@ -1536,6 +1536,7 @@ static void on_timeout(uv_timer_t *handle) {
 static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     client_data_t *client_data = (client_data_t *) client->data;
     sam2_server_t *sig_server = (sam2_server_t *) client_data->sig_server;
+    sam2_message_e message_tag = SAM2_EMESSAGE_PART;
 
     if (sig_server->_debug_allocated_response_set != NULL) {
         SAM2_LOG_ERROR("We had allocated unsent responses this means we probably leaked memory handling the last response");
@@ -1558,7 +1559,6 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
         goto cleanup;
     }
 
-    sam2_message_e message_tag = SAM2_EMESSAGE_PART;
     for (int64_t remaining = nread; remaining > 0;) {
         // We first need to read the header as that is how we infer the total size of the message
         if (client_data->length < SAM2_HEADER_SIZE) {
