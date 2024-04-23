@@ -2831,17 +2831,9 @@ int main(int argc, char *argv[]) {
         g_connected_to_sam2 &= g_sam2_socket != SAM2_SOCKET_INVALID;
         if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
-                static int allocated_message_index = -1;
-                if (allocated_message_index == -1) {
-                    allocated_message_index = g_libretro_context.message_history_length;
-                    if (g_libretro_context.message_history_length+1 < SAM2_ARRAY_LENGTH(g_libretro_context.message_history)) {
-                        g_libretro_context.message_history_length++;
-                    }
-                }
-
-                sam2_message_u *latest_sam2_message = &g_libretro_context.message_history[allocated_message_index];
-                static char buffer[sizeof(sam2_message_u)];
-                static int buffer_length = 0;
+                static sam2_message_u latest_sam2_message = {0}; // @todo Clearing this should be handled by sam2_client_poll
+                char buffer[sizeof(sam2_message_u)];
+                int buffer_length = 0;
 
                 if (g_sam2_server) {
                     for (int i = 0; i < 128; i++) {
@@ -2851,7 +2843,7 @@ int main(int argc, char *argv[]) {
 
                 int status = sam2_client_poll(
                     g_sam2_socket,
-                    latest_sam2_message,
+                    &latest_sam2_message,
                     buffer,
                     &buffer_length
                 );
@@ -2862,7 +2854,9 @@ int main(int argc, char *argv[]) {
                 } else if (status == 0) {
                     break;
                 } else {
-                    allocated_message_index = -1;
+                    if (g_libretro_context.message_history_length < SAM2_ARRAY_LENGTH(g_libretro_context.message_history)) {
+                        g_libretro_context.message_history[g_libretro_context.message_history_length++] = latest_sam2_message;
+                    }
 
                     g_ulnet_session.zstd_compress_level = g_zstd_compress_level;
                     g_ulnet_session.user_ptr = (void *) &g_libretro_context;
@@ -2877,15 +2871,15 @@ int main(int argc, char *argv[]) {
                     g_ulnet_session.retro_unserialize = g_retro.retro_unserialize;
                     int status = ulnet_process_message(
                         &g_ulnet_session,
-                        latest_sam2_message
+                        &latest_sam2_message
                     );
 
-                    if (memcmp(latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                        g_last_sam2_error = *((sam2_error_message_t *) latest_sam2_message);
+                    if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        g_last_sam2_error = *((sam2_error_message_t *) &latest_sam2_message);
                         printf("Received error response from SAM2 (%" PRId64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
                         fflush(stdout);
-                    } else if (memcmp(latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                        sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) latest_sam2_message;
+                    } else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
 
                         if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_UNAVAILABLE) {
                             g_is_refreshing_rooms = false;
@@ -2895,6 +2889,8 @@ int main(int argc, char *argv[]) {
                             }
                         }
                     }
+
+                    memset(&latest_sam2_message, 0, sizeof(latest_sam2_message));
                 }
             }
         }
