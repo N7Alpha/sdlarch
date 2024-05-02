@@ -16,3 +16,6 @@
 [submodule "libjuice"]
 	path = libjuice
 	url = git@github.com:N7Alpha/libjuice.git
+[submodule "netImgui"]
+	path = netImgui
+	url = ./netImgui
