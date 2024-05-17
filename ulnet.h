@@ -340,7 +340,8 @@ int64_t get_unix_time_microseconds() {
 #endif
 
 double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
-    return (double) (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
+    double seconds = (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
+    return seconds;
 }
 
 #define ULNET_POLL_SESSION_SAVED_STATE 0b00000001
@@ -445,9 +446,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
     timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
 
-    int ret;
+    int ret = juice_user_poll(agent, agent_count, timeout_milliseconds);
     // This will call ulnet_receive_packet_callback in a loop
-    if ((ret = juice_user_poll(agent, agent_count, timeout_milliseconds))) {
+    if (ret < 0) {
         SAM2_LOG_FATAL("Error polling agent (%d)\n", ret);
     }
 
@@ -702,7 +703,7 @@ ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_p
     }
 
     if (peer_existing_port > SAM2_AUTHORITY_INDEX) {
-        // Remove with replacement (Spectators are stored contigously with no gaps)
+        // Remove with replacement (Spectators are stored contiguously with no gaps)
         // @todo Maybe don't do this if it makes the implementation easier
         assert(session->spectator_count > 0);
         assert(peer_new_port < SAM2_PORT_MAX);
