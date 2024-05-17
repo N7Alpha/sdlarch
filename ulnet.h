@@ -228,12 +228,12 @@ static inline int ulnet_locate_peer(ulnet_session_t *session, uint64_t peer_id) 
     return spectator_port != -1 ? spectator_port + SAM2_PORT_MAX+1 : room_port;
 }
 
-bool ulnet_is_authority(ulnet_session_t *session) {
+static bool ulnet_is_authority(ulnet_session_t *session) {
     return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
            || session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == 0; // @todo I don't think this extra check should be necessary
 }
 
-bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
+static bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
     return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
            && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
 }
