@@ -367,7 +367,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         memset(next_history_packet, 0, sizeof(session->state_packet_history[0][0]));
         memcpy(
             next_history_packet,
-            &input_packet,
+            input_packet,
             actual_payload_size
         );
 
@@ -382,7 +382,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             // Wait until we can send netplay messages to everyone without fail
             if (   state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED
                 && !ulnet_is_spectator(session, session->our_peer_id)) {
-                juice_send(session->agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
+                juice_send(session->agent[p], (const char *) input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                 SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
                     session->state[SAM2_AUTHORITY_INDEX].frame, p, session->room_we_are_in.peer_ids[p]);
             }
