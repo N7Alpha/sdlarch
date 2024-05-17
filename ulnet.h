@@ -710,6 +710,7 @@ ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_p
 
         session->spectator_count--;
         session->agent[peer_existing_port] = session->agent[(SAM2_PORT_MAX+1) + session->spectator_count];
+        session->agent[(SAM2_PORT_MAX+1) + session->spectator_count] = NULL;
         session->room_we_are_in.peer_ids[peer_existing_port] = session->spectator_peer_ids[session->spectator_count];
     }
 }
